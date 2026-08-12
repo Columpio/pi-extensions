@@ -1,0 +1,105 @@
+// config.ts — YAML config loading for failover
+import { parse } from "yaml";
+import { readFileSync, existsSync } from "fs";
+import { join } from "path";
+
+/** A backend for the "failover" provider (custom streamSimple) */
+export interface BackendConfig {
+  name: string;
+  enabled: boolean;
+  type: "anthropic";
+  base_url?: string;
+  api_key_env?: string;
+  api_key?: string;
+}
+
+/** A fallback model to swap to when the active model errors */
+export interface FallbackModelConfig {
+  /** e.g. "amazon-bedrock" or "anthropic" or "failover" */
+  provider: string;
+  /** e.g. "global.anthropic.claude-sonnet-4-6" */
+  model: string;
+}
+
+export interface FailoverRules {
+  trigger_codes: number[];
+  trigger_on_connection_error: boolean;
+  cooldown_seconds: number;
+  max_retries: number;
+}
+
+export interface NotifyConfig {
+  enabled: boolean;
+  desktop?: boolean;
+}
+
+export interface FailoverConfig {
+  failover: FailoverRules;
+  notify: NotifyConfig;
+  /** Backends for the "failover" provider (streamSimple-based failover) */
+  backends: BackendConfig[];
+  /**
+   * Automatic model swap chain. When any active model errors with a retriable
+   * error, pi-failover swaps to the next model in this list and retries.
+   * Works with ANY provider (anthropic, bedrock, vertex, etc.).
+   */
+  fallback_models: FallbackModelConfig[];
+}
+
+const DEFAULT_CONFIG: FailoverConfig = {
+  failover: {
+    trigger_codes: [429, 402, 500, 504, 529],
+    trigger_on_connection_error: true,
+    cooldown_seconds: 300,
+    max_retries: 3,
+  },
+  notify: { enabled: true, desktop: true },
+  backends: [],
+  fallback_models: [],
+};
+
+export function loadConfig(): FailoverConfig {
+  // HOME is not guaranteed when Pi is launched from Windows Terminal, Explorer,
+  // or a shortcut. USERPROFILE is the reliable Windows equivalent.
+  const home = process.env.HOME || process.env.USERPROFILE;
+  const candidates = [
+    process.env.PI_FAILOVER_CONFIG,
+    join(process.cwd(), "failover.yaml"),
+    join(process.cwd(), "failover.yml"),
+    home && join(home, ".config", "pi-failover", "failover.yaml"),
+  ].filter(Boolean) as string[];
+
+  for (const p of candidates) {
+    if (existsSync(p)) {
+      const raw = readFileSync(p, "utf-8");
+      const parsed = parse(raw) as Partial<FailoverConfig>;
+      const config = mergeDeep(DEFAULT_CONFIG, parsed) as FailoverConfig;
+      resolveKeys(config);
+      console.error(`[pi-failover] Config loaded from ${p}`);
+      return config;
+    }
+  }
+
+  return DEFAULT_CONFIG;
+}
+
+function resolveKeys(config: FailoverConfig) {
+  for (const b of config.backends) {
+    if (b.api_key_env && !b.api_key) {
+      b.api_key = process.env[b.api_key_env];
+    }
+  }
+}
+
+function mergeDeep(target: any, source: any): any {
+  if (!source) return target;
+  const result = { ...target };
+  for (const key of Object.keys(source)) {
+    if (source[key] && typeof source[key] === "object" && !Array.isArray(source[key])) {
+      result[key] = mergeDeep(target[key] || {}, source[key]);
+    } else {
+      result[key] = source[key];
+    }
+  }
+  return result;
+}

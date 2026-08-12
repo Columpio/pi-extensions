@@ -1,0 +1,17 @@
+{
+  "name": "pi-failover",
+  "version": "0.1.0",
+  "description": "Automatic LLM failover extension for Pi coding agent",
+  "type": "module",
+  "private": true,
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "scripts": {
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.52.0",
+    "yaml": "^2.8.3"
+  }
+}
