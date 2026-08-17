@@ -26,12 +26,11 @@ const FRAME_MS = 120;
 // the OSC title escape directly to stdout (fd 1).
 const WORKER_CODE = `
 const { parentPort, workerData } = require("node:worker_threads");
-const fs = require("node:fs");
 const frames = workerData.frames;
 const frameMs = workerData.frameMs;
 let title = workerData.title;
-function writeTitle(text) {
-  try { fs.writeSync(1, "\\x1b]0;" + text + "\\x07"); } catch {}
+function publishTitle(frame) {
+  parentPort.postMessage({ frame, title });
 }
 // Self-scheduling timeout chain aimed at exact frame boundaries. A plain
 // setInterval quantizes to the ~15.6ms timer grid out of phase with the
@@ -40,7 +39,7 @@ function writeTitle(text) {
 const start = performance.now();
 let n = 0;
 function fire() {
-  writeTitle(frames[n % frames.length] + " " + title);
+  publishTitle(frames[n % frames.length]);
   n++;
   const target = start + (n + 1) * frameMs;
   timer = setTimeout(fire, Math.max(1, target - performance.now()));
@@ -152,8 +151,16 @@ export default function (pi: ExtensionAPI) {
         workerData: { frames: FRAMES, frameMs: FRAME_MS, title: baseTitle },
       });
       w.unref(); // never keep the process alive for the animation
+      // Keep title writes on the owning extension instance. During /fork,
+      // the old worker may deliver a queued message after the new session is
+      // already bound; direct worker writes could overwrite the new title.
+      w.on("message", (message: { frame?: string; title?: string }) => {
+        if (worker !== w || typeof message?.frame !== "string" || typeof message.title !== "string") return;
+        ctx.ui.setTitle(`${message.frame} ${message.title}`);
+      });
       w.on("error", () => {
         // Worker died mid-run; restore base title and give up quietly.
+        if (worker !== w) return;
         worker = null;
         ctx.ui.setTitle(baseTitle);
       });
